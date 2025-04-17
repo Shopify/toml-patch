@@ -1,0 +1,19 @@
+[package]
+name = "toml-patch"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+toml_edit = "0.22.24"
+wasm-bindgen = "0.2.100"
+lol_alloc = "0.4.1"
+
+[profile.release]
+lto = true
+opt-level = 's'
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"
