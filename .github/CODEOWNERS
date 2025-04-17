@@ -1,0 +1,4 @@
+# This file specifies the owners for code review purposes.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+* @shop/app_inner_loop
