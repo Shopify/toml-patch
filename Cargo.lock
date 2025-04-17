@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "toml-patch"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "lol_alloc",
  "toml_edit",
