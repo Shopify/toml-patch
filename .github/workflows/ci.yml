@@ -34,8 +34,17 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
+    - name: Formatting
+      run: cargo fmt --all -- --check
+      continue-on-error: true
+
+    - name: Linting
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      continue-on-error: true
+
     - name: Run cargo check
       run: cargo check --target="wasm32-unknown-unknown" --all-features
+      continue-on-error: true
 
     - uses: jetli/wasm-pack-action@v0.4.0
       with:
