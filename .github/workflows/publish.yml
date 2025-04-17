@@ -38,7 +38,7 @@ jobs:
         version: 'latest'
 
     - name: Build for publishing
-      run: wasm-pack build --target bundler --release --scope="shopify"
+      run: wasm-pack build --target nodejs --release --scope="shopify"
 
     - name: Check version matches
       run: |
