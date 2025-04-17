@@ -39,7 +39,7 @@ jobs:
 
     - name: Check version matches
       run: |
-        PACKAGE_VERSION=$(node -p "require('./package.json').version")
+        PACKAGE_VERSION=$(node -p "require('./pkg/package.json').version")
         TAG_VERSION=${GITHUB_REF#refs/tags/v}
         if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
           echo "Package version ($PACKAGE_VERSION) doesn't match tag version ($TAG_VERSION)"
