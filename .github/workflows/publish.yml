@@ -37,6 +37,9 @@ jobs:
       with:
         version: 'latest'
 
+    - name: Build for publishing
+      run: wasm-pack build --target bundler --release --scope="shopify"
+
     - name: Check version matches
       run: |
         PACKAGE_VERSION=$(node -p "require('./pkg/package.json').version")
@@ -45,9 +48,6 @@ jobs:
           echo "Package version ($PACKAGE_VERSION) doesn't match tag version ($TAG_VERSION)"
           exit 1
         fi
-
-    - name: Build for publishing
-      run: wasm-pack build --target bundler --release --scope="shopify"
 
     - name: Publish to npm
       run: wasm-pack publish
