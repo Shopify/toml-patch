@@ -37,8 +37,11 @@ impl From<TomlEditError> for TomlError {
 /// Parses a TOML string using `toml_edit` and returns the serialized result.
 /// Useful for validating and potentially normalizing TOML content.
 /// Returns an error if the TOML content cannot be parsed.
-#[wasm_bindgen]
-pub fn echo_toml(toml_content: &str) -> Result<String, String> {
+#[wasm_bindgen(js_name = "echoToml")]
+pub fn echo_toml(
+  #[wasm_bindgen(js_name = "tomlContent")]
+  toml_content: &str
+) -> Result<String, String> {
   DocumentMut::from_str(toml_content).map(|doc| doc.to_string()).map_err(|e| e.to_string())
 }
 
@@ -54,8 +57,15 @@ pub fn echo_toml(toml_content: &str) -> Result<String, String> {
 /// # Returns
 /// * `Ok(String)` - The updated TOML content as a string
 /// * `Err(String)` - An error message if the operation fails
-#[wasm_bindgen]
-pub fn update_toml_values(toml_content: &str, paths_str: &str, values_str: &str) -> Result<String, String> {
+#[wasm_bindgen(js_name = "updateTomlValues")]
+pub fn update_toml_values(
+  #[wasm_bindgen(js_name = "tomlContent")]
+  toml_content: &str,
+  #[wasm_bindgen(js_name = "paths")]
+  paths_str: &str,
+  #[wasm_bindgen(js_name = "values")]
+  values_str: &str
+) -> Result<String, String> {
   let mut doc = DocumentMut::from_str(toml_content).map_err(|e| format!("Failed to parse TOML: {}", e))?;
 
   for item in prepare_updates(paths_str, values_str)? {
