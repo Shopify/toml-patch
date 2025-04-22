@@ -42,14 +42,39 @@ pub fn echo_toml(#[wasm_bindgen(js_name = "tomlContent")] toml_content: &str) ->
   DocumentMut::from_str(toml_content).map(|doc| doc.to_string()).map_err(|e| e.to_string())
 }
 
+#[wasm_bindgen]
+pub struct Patch {
+  key_path: Vec<String>,
+  value: Vec<String>,
+}
+
+impl Patch {
+  pub fn as_multiple_values(&self) -> Option<&Vec<String>> {
+    if self.value.len() > 1 { Some(&self.value) } else { None }
+  }
+
+  pub fn as_single_value(&self) -> Option<&String> {
+    if self.value.len() == 1 { Some(&self.value[0]) } else { None }
+  }
+}
+
+#[wasm_bindgen(js_name = "patchArrayValues")]
+pub fn patch_array_values(#[wasm_bindgen(js_name = "keyPath")] key_path: Vec<String>, values: Vec<String>) -> Patch {
+  Patch { key_path, value: values }
+}
+
+#[wasm_bindgen(js_name = "patchSingleValue")]
+pub fn patch_single_value(#[wasm_bindgen(js_name = "tomlContent")] key_path: Vec<String>, value: String) -> Patch {
+  Patch { key_path, value: vec![value] }
+}
+
 /// Updates TOML content with the provided key-value pairs
 ///
 /// # Arguments
 /// * `toml_content` - A string containing valid TOML
-/// * `paths` - A comma-separated list of dotted paths (e.g., "a.b.c,x.y.z")
-/// * `values` - A comma-separated list of values corresponding to the paths
+/// * `patches` - An array of patches to apply; use `patchArrayValues` and `patchSingleValue` to create patches
 ///
-/// A value of "$undefined" will remove the key from the TOML document.
+/// A value of "$undefined" in a patch will remove the key from the TOML document.
 ///
 /// # Returns
 /// * `Ok(String)` - The updated TOML content as a string
@@ -57,68 +82,34 @@ pub fn echo_toml(#[wasm_bindgen(js_name = "tomlContent")] toml_content: &str) ->
 #[wasm_bindgen(js_name = "updateTomlValues")]
 pub fn update_toml_values(
   #[wasm_bindgen(js_name = "tomlContent")] toml_content: &str,
-  #[wasm_bindgen(js_name = "paths")] paths_str: &str,
-  #[wasm_bindgen(js_name = "values")] values_str: &str,
+  patches: Vec<Patch>,
 ) -> Result<String, String> {
   let mut doc = DocumentMut::from_str(toml_content).map_err(|e| format!("Failed to parse TOML: {}", e))?;
 
-  for item in prepare_updates(paths_str, values_str)? {
+  let mut update_items: Vec<UpdateItem> = patches
+    .iter()
+    .enumerate()
+    .map(|(original_index, patch)| {
+      let path_parts = patch.key_path.iter().map(|s| s.as_str()).collect();
+
+      let value_to_insert = if let Some(array_value) = patch.as_multiple_values() {
+        Some(Value::Array(array_value.iter().map(|s| parse_value(s).unwrap()).collect()))
+      } else {
+        let s = patch.as_single_value().unwrap();
+        parse_value(s)
+      };
+
+      UpdateItem { original_index, path_parts, value_to_insert }
+    })
+    .collect();
+
+  sort_updates(&mut update_items);
+
+  for item in update_items {
     apply_single_update_to_doc(&mut doc, &item.path_parts, item.value_to_insert)?;
   }
 
   Ok(doc.to_string())
-}
-
-/// Parses a comma-separated string, trimming whitespace from each resulting item.
-fn split_comma_separated_str(s: &str) -> Vec<&str> {
-  s.split(',').map(|item| item.trim()).collect()
-}
-
-/// Parses the input path and value strings, validates them, creates `UpdateItem`s,
-/// and sorts them for application. Sorting is crucial: longest paths first ensures
-/// that deeper modifications don't invalidate paths for later, shallower updates
-/// (e.g., processing `a.b.c` before `a.b`). Secondary sort by original index maintains stability.
-///
-/// # Arguments
-/// * `paths_str` - A comma-separated list of dotted paths (e.g., "a.b.c,x.y.z").
-/// * `values_str` - A comma-separated list of values corresponding to the paths.
-///
-/// # Returns
-/// * `Ok(Vec<UpdateItem>)` - A vector of validated update items, sorted appropriately.
-/// * `Err(String)` - An error message if parsing or validation fails.
-fn prepare_updates<'a>(paths_str: &'a str, values_str: &str) -> Result<Vec<UpdateItem<'a>>, String> {
-  let path_list = split_comma_separated_str(paths_str);
-  let value_list = split_comma_separated_str(values_str);
-
-  if path_list.len() != value_list.len() {
-    return Err("Number of paths must match number of values".to_string());
-  }
-
-  // Collect results and check for initial parsing/validation errors.
-  // Using collect into Result handles potential errors during mapping.
-  let mut updates: Vec<UpdateItem> = path_list
-    .iter()
-    .enumerate()
-    .map(|(i, &path)| {
-      let value_str = value_list[i]; // Safe due to initial length check
-      // Convert path parts to owned Strings
-      let path_parts = path.split('.').collect::<Vec<&str>>();
-
-      // Validate that the path isn't empty and doesn't contain empty segments (e.g., "a..b").
-      if path_parts.is_empty() || path_parts.iter().any(|s| s.is_empty()) {
-        Err(format!("Path at index {} ('{}') is invalid or contains empty segments", i, path))
-      } else {
-        let parsed_value = parse_value(value_str);
-        Ok(UpdateItem { original_index: i, path_parts, value_to_insert: parsed_value })
-      }
-    })
-    .collect::<Result<Vec<_>, String>>()?;
-
-  // Sort updates: longest paths first, preserving original order for ties.
-  // This sorting strategy prevents conflicts when creating nested structures.
-  sort_updates(&mut updates);
-
-  Ok(updates)
 }
 
 /// This function handles the core logic of applying a single update item to the TOML document.
@@ -358,8 +349,8 @@ mod tests {
 
   use super::*;
 
-  fn test_update_toml_values(input: &str, paths: &str, values: &str, expected: &str) {
-    let result = update_toml_values(input, paths, values).expect("Failed to update TOML");
+  fn test_update_toml_values(input: &str, patches: Vec<Patch>, expected: &str) {
+    let result = update_toml_values(input, patches).expect("Failed to update TOML");
     let expected_doc = DocumentMut::from_str(expected).unwrap();
     let result_doc = DocumentMut::from_str(&result).unwrap();
     assert_eq!(expected_doc.to_string(), result_doc.to_string());
@@ -388,15 +379,14 @@ key = "value"
 
   #[wasm_bindgen_test(unsupported = test)]
   fn test_empty_file_single_item() {
-    test_update_toml_values(r#""#, "a", "1", r#"a = 1"#);
+    test_update_toml_values(r#""#, vec![patch_single_value(vec!["a".to_string()], "1".to_string())], r#"a = 1"#);
   }
 
   #[wasm_bindgen_test(unsupported = test)]
   fn test_empty_file_double_item() {
     test_update_toml_values(
       r#""#,
-      "a.b",
-      "1",
+      vec![patch_single_value(vec!["a".to_string(), "b".to_string()], "1".to_string())],
       r#"[a]
 b = 1
 "#,
@@ -410,8 +400,7 @@ b = 1
 [a]
 b = 1
 "#,
-      "a.c.d",
-      "2",
+      vec![patch_single_value(vec!["a".to_string(), "c".to_string(), "d".to_string()], "2".to_string())],
       r#"
 [a]
 b = 1
@@ -427,8 +416,10 @@ c.d = 2
 [a]
 b = 1
 "#,
-      "a.c.d.e",
-      "2",
+      vec![patch_single_value(
+        vec!["a".to_string(), "c".to_string(), "d".to_string(), "e".to_string()],
+        "2".to_string(),
+      )],
       r#"
 [a]
 b = 1
@@ -447,8 +438,7 @@ e = 2
 key = "old_value"
 other = 123
 "#,
-      "section.key",
-      "new_value",
+      vec![patch_single_value(vec!["section".to_string(), "key".to_string()], "new_value".to_string())],
       r#"
 [section]
 key = "new_value"
@@ -464,8 +454,7 @@ other = 123
 [section]
 existing = true
 "#,
-      "section.new_key",
-      "42",
+      vec![patch_single_value(vec!["section".to_string(), "new_key".to_string()], "42".to_string())],
       r#"
 [section]
 existing = true
@@ -480,8 +469,10 @@ new_key = 42
       r#"
 [parent]
 "#,
-      "parent.child.grandchild",
-      "true",
+      vec![patch_single_value(
+        vec!["parent".to_string(), "child".to_string(), "grandchild".to_string()],
+        "true".to_string(),
+      )],
       r#"
 [parent]
 child.grandchild = true
@@ -499,8 +490,11 @@ key1 = "value1"
 [section2]
 key2 = 42
 "#,
-      "section1.key1,section2.key2,section3.new",
-      "updated,99,3.14",
+      vec![
+        patch_single_value(vec!["section1".to_string(), "key1".to_string()], "updated".to_string()),
+        patch_single_value(vec!["section2".to_string(), "key2".to_string()], "99".to_string()),
+        patch_single_value(vec!["section3".to_string(), "new".to_string()], "3.14".to_string()),
+      ],
       r#"
 [section1]
 key1 = "updated"
@@ -520,8 +514,12 @@ new = 3.14
       r#"
 [test]
 "#,
-      "test.string,test.int,test.float,test.bool",
-      "hello,123,45.67,true",
+      vec![
+        patch_single_value(vec!["test".to_string(), "string".to_string()], "hello".to_string()),
+        patch_single_value(vec!["test".to_string(), "int".to_string()], "123".to_string()),
+        patch_single_value(vec!["test".to_string(), "float".to_string()], "45.67".to_string()),
+        patch_single_value(vec!["test".to_string(), "bool".to_string()], "true".to_string()),
+      ],
       r#"
 [test]
 string = "hello"
@@ -539,8 +537,7 @@ bool = true
 [section]
 foo = 1
 "#,
-      "section.new_key",
-      "42",
+      vec![patch_single_value(vec!["section".to_string(), "new_key".to_string()], "42".to_string())],
       r#"
 [section]
 foo = 1
@@ -559,8 +556,22 @@ foo = 1
 [keep.this]
 thing = true
 "#,
-      "section.subsection.new_key,section.subsection.something.else.here",
-      "42,43",
+      vec![
+        patch_single_value(
+          vec!["section".to_string(), "subsection".to_string(), "new_key".to_string()],
+          "42".to_string(),
+        ),
+        patch_single_value(
+          vec![
+            "section".to_string(),
+            "subsection".to_string(),
+            "something".to_string(),
+            "else".to_string(),
+            "here".to_string(),
+          ],
+          "43".to_string(),
+        ),
+      ],
       r#"
 [section]
 foo = 1
@@ -584,8 +595,14 @@ thing = true
 [foo]
 existing = 1
 "#,
-      "foo.bar.aaa,foo.bar.bbb,foo.bar.ccc.ddd",
-      "1,2,3",
+      vec![
+        patch_single_value(vec!["foo".to_string(), "bar".to_string(), "aaa".to_string()], "1".to_string()),
+        patch_single_value(vec!["foo".to_string(), "bar".to_string(), "bbb".to_string()], "2".to_string()),
+        patch_single_value(
+          vec!["foo".to_string(), "bar".to_string(), "ccc".to_string(), "ddd".to_string()],
+          "3".to_string(),
+        ),
+      ],
       r#"
 [foo]
 existing = 1
@@ -607,8 +624,7 @@ ddd = 3
 [a.b.c]
 d = 1
 "#,
-      "a.b",
-      "1",
+      vec![patch_single_value(vec!["a".to_string(), "b".to_string()], "1".to_string())],
       r#"[a]
 b = 1
 "#,
@@ -622,8 +638,7 @@ b = 1
 [a]
 d = 1
 "#,
-      "a",
-      "1",
+      vec![patch_single_value(vec!["a".to_string()], "1".to_string())],
       r#"a = 1"#,
     );
   }
@@ -635,8 +650,7 @@ d = 1
 [[a.b.c]]
 d = 1
 "#,
-      "a.b.c",
-      "1",
+      vec![patch_single_value(vec!["a".to_string(), "b".to_string(), "c".to_string()], "1".to_string())],
       r#"[a.b]
 c = 1
 "#,
@@ -650,8 +664,7 @@ c = 1
 [a]
 b = 1
 "#,
-      "c",
-      "1",
+      vec![patch_single_value(vec!["c".to_string()], "1".to_string())],
       r#"c = 1
 
 [a]
@@ -667,8 +680,7 @@ b = 1
 [a]
 b = 1
 "#,
-      "a.b.c",
-      "1",
+      vec![patch_single_value(vec!["a".to_string(), "b".to_string(), "c".to_string()], "1".to_string())],
       r#"
 [a]
 
@@ -685,8 +697,7 @@ c = 1
 [a]
 d = 1
 "#,
-      "a.b.c",
-      "1",
+      vec![patch_single_value(vec!["a".to_string(), "b".to_string(), "c".to_string()], "1".to_string())],
       r#"
 [a]
 d = 1
@@ -702,8 +713,10 @@ b.c = 1
 [a.b.c]
 existing = 1
 "#,
-      "a.b.c.new",
-      "1",
+      vec![patch_single_value(
+        vec!["a".to_string(), "b".to_string(), "c".to_string(), "new".to_string()],
+        "1".to_string(),
+      )],
       r#"
 [a.b.c]
 existing = 1
@@ -719,8 +732,48 @@ new = 1
 [foo.a.b.c.d.e]
 existing = 1
 "#,
-      "foo.a.b.c.d.e.f.g,foo.a.b.c.d.e.f.h,foo.a.b.c.d.e.f.i.j",
-      "1,2,3",
+      vec![
+        patch_single_value(
+          vec![
+            "foo".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+          ],
+          "1".to_string(),
+        ),
+        patch_single_value(
+          vec![
+            "foo".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "h".to_string(),
+          ],
+          "2".to_string(),
+        ),
+        patch_single_value(
+          vec![
+            "foo".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "i".to_string(),
+            "j".to_string(),
+          ],
+          "3".to_string(),
+        ),
+      ],
       r#"
 [foo.a.b.c.d.e]
 existing = 1
@@ -742,8 +795,7 @@ j = 3
       [section]
       key = "value"
       "#,
-      "section.key",
-      "$undefined",
+      vec![patch_single_value(vec!["section".to_string(), "key".to_string()], "$undefined".to_string())],
       r#"
       [section]
       "#,
@@ -756,8 +808,7 @@ j = 3
       r#"
       key = "value"
       "#,
-      "key",
-      "$undefined",
+      vec![patch_single_value(vec!["key".to_string()], "$undefined".to_string())],
       r#"      "#,
     );
   }
@@ -768,8 +819,7 @@ j = 3
       r#"
       [section]
       "#,
-      "key",
-      "$undefined",
+      vec![patch_single_value(vec!["key".to_string()], "$undefined".to_string())],
       r#"
       [section]
       "#,
@@ -799,8 +849,10 @@ untouched = 123 # This comment will be preserved
 [another] # Another section comment
 foo = 42 # Number comment
 "#,
-      "section.key,another.bar",
-      "updated,true",
+      vec![
+        patch_single_value(vec!["section".to_string(), "key".to_string()], "updated".to_string()),
+        patch_single_value(vec!["another".to_string(), "bar".to_string()], "true".to_string()),
+      ],
       r#"
 # This is a top comment
 [section] # Comment after section header
@@ -813,6 +865,24 @@ untouched = 123 # This comment will be preserved
 foo = 42 # Number comment
 bar = true
 "#,
+    );
+  }
+
+  #[wasm_bindgen_test(unsupported = test)]
+  fn test_patch_an_array_value() {
+    test_update_toml_values(
+      r#"
+      [a]
+      b = [1, 2, 3]
+      "#,
+      vec![patch_array_values(
+        vec!["a".to_string(), "b".to_string()],
+        vec!["4".to_string(), "5".to_string(), "hello".to_string()],
+      )],
+      r#"
+      [a]
+      b = [4, 5, "hello"]
+      "#,
     );
   }
 

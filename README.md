@@ -9,7 +9,7 @@ A WebAssembly-powered library to efficiently update TOML files, based on Rust's 
 The primary function exported for JavaScript usage is `updateTomlValues`.
 
 ```javascript
-import { updateTomlValues } from "@shopify/toml-patch";
+import { updateTomlValues, patchSingleValue } from "@shopify/toml-patch";
 
 const originalToml = `
 [package]
@@ -20,14 +20,14 @@ version = "0.1.0"
 serde = "1.0"
 `;
 
-const pathsToUpdate = "package.version,dependencies.serde,new_table.key";
-const correspondingValues = '"0.2.0","$undefined","new value"'; // Use "$undefined" to remove a key
-
 try {
   const updatedToml = updateTomlValues(
     originalToml,
-    pathsToUpdate,
-    correspondingValues
+    [
+      patchSingleValue(['package', 'version'], '0.2.0'),
+      patchSingleValue(['dependencies', 'serde'], '$undefined'),
+      patchSingleValue(['new_table', 'key'], 'new value')
+    ]
   );
 
   console.log(updatedToml);
@@ -65,5 +65,5 @@ This project uses Rust and `wasm-pack`.
 
 1.  **Install Rust:** [https://www.rust-lang.org/tools/install](https://www.rust-lang.org/tools/install)
 2.  **Install `wasm-pack`:** `cargo install wasm-pack`
-3.  **Build:** `wasm-pack build --target bundler --release --scope="shopify"`
+3.  **Build:** `wasm-pack build --target nodejs --release --scope="shopify"`
 4.  **Test:** `wasm-pack test --node`
