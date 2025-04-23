@@ -72,6 +72,10 @@ jobs:
       run: wasm-pack test --node -- --color always # Pass color flag to wasm-pack tests
       continue-on-error: true
 
+    - name: Build for JS example tests
+      run: pnpm build
+      working-directory: example
+
     - name: Run example tests
       run: pnpm test
       working-directory: example
