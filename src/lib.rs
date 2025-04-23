@@ -42,39 +42,13 @@ pub fn echo_toml(#[wasm_bindgen(js_name = "tomlContent")] toml_content: &str) ->
   DocumentMut::from_str(toml_content).map(|doc| doc.to_string()).map_err(|e| e.to_string())
 }
 
-#[wasm_bindgen]
-pub struct Patch {
-  key_path: Vec<String>,
-  value: Vec<String>,
-}
-
-impl Patch {
-  pub fn as_multiple_values(&self) -> Option<&Vec<String>> {
-    if self.value.len() > 1 { Some(&self.value) } else { None }
-  }
-
-  pub fn as_single_value(&self) -> Option<&String> {
-    if self.value.len() == 1 { Some(&self.value[0]) } else { None }
-  }
-}
-
-#[wasm_bindgen(js_name = "patchArrayValues")]
-pub fn patch_array_values(#[wasm_bindgen(js_name = "keyPath")] key_path: Vec<String>, values: Vec<String>) -> Patch {
-  Patch { key_path, value: values }
-}
-
-#[wasm_bindgen(js_name = "patchSingleValue")]
-pub fn patch_single_value(#[wasm_bindgen(js_name = "tomlContent")] key_path: Vec<String>, value: String) -> Patch {
-  Patch { key_path, value: vec![value] }
-}
-
 /// Updates TOML content with the provided key-value pairs
 ///
 /// # Arguments
 /// * `toml_content` - A string containing valid TOML
-/// * `patches` - An array of patches to apply; use `patchArrayValues` and `patchSingleValue` to create patches
+/// * `patches` - An array of patches to apply; each patch is a tuple of a path and a value/values
 ///
-/// A value of "$undefined" in a patch will remove the key from the TOML document.
+/// An undefined value in a patch will remove the key from the TOML document.
 ///
 /// # Returns
 /// * `Ok(String)` - The updated TOML content as a string
@@ -82,31 +56,36 @@ pub fn patch_single_value(#[wasm_bindgen(js_name = "tomlContent")] key_path: Vec
 #[wasm_bindgen(js_name = "updateTomlValues")]
 pub fn update_toml_values(
   #[wasm_bindgen(js_name = "tomlContent")] toml_content: &str,
-  patches: Vec<Patch>,
+  #[wasm_bindgen(
+    unchecked_param_type = "[string[], number | string | boolean | undefined | (number | string | boolean)[]][]"
+  )]
+  patches: js_sys::Array,
 ) -> Result<String, String> {
   let mut doc = DocumentMut::from_str(toml_content).map_err(|e| format!("Failed to parse TOML: {}", e))?;
 
-  let mut update_items: Vec<UpdateItem> = patches
+  let mut update_items = patches
     .iter()
     .enumerate()
-    .map(|(original_index, patch)| {
-      let path_parts = patch.key_path.iter().map(|s| s.as_str()).collect();
+    .map(|(index, tuple)| {
+      let tuple_as_array = js_sys::Array::unchecked_from_js(tuple);
+      let path = tuple_as_array.get(0);
+      let path_as_array = js_sys::Array::unchecked_from_js(path);
+      let path_as_vec = path_as_array.iter().map(|v| v.as_string().unwrap()).collect::<Vec<String>>();
+      let value_or_values = tuple_as_array.get(1);
+      let value_to_insert = parse_value_from_js_value(value_or_values);
 
-      let value_to_insert = if let Some(array_value) = patch.as_multiple_values() {
-        Some(Value::Array(array_value.iter().map(|s| parse_value(s).unwrap()).collect()))
-      } else {
-        let s = patch.as_single_value().unwrap();
-        parse_value(s)
-      };
-
-      UpdateItem { original_index, path_parts, value_to_insert }
+      UpdateItem { original_index: index, path_parts: path_as_vec, value_to_insert }
     })
-    .collect();
+    .collect::<Vec<UpdateItem>>();
 
   sort_updates(&mut update_items);
 
   for item in update_items {
-    apply_single_update_to_doc(&mut doc, &item.path_parts, item.value_to_insert)?;
+    apply_single_update_to_doc(
+      &mut doc,
+      &item.path_parts.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+      item.value_to_insert,
+    )?;
   }
 
   Ok(doc.to_string())
@@ -247,48 +226,74 @@ fn delete_item_at_path(doc: &mut DocumentMut, path_parts: &[&str]) {
   }
 }
 
-/// Parses a string slice into a `toml_edit::Value`.
-/// It attempts to parse as boolean, integer, and float (in that order).
-/// If none of these succeed, it treats the input as a TOML string value.
-/// Preserves original whitespace if interpreted as a string.
-fn parse_value(value_str: &str) -> Option<Value> {
-  // Trim whitespace for boolean/numeric checks, but use original for string value.
-  let trimmed_value_str = value_str.trim();
+fn parse_value_from_js_value(value_or_values: JsValue) -> Option<Value> {
+  let value_item: Item;
+  if value_or_values.is_array() {
+    let values = js_sys::Array::from(&value_or_values);
+    let with_nones = values.iter().filter_map(parse_value_from_js_value).collect::<Vec<Value>>();
 
-  let item = if trimmed_value_str == "true" {
-    value(true)
-  } else if trimmed_value_str == "false" {
-    value(false)
-  } else if trimmed_value_str == "$undefined" {
+    value_item = Item::Value(Value::from_iter(with_nones));
+  } else if let Some(bool_value) = value_or_values.as_bool() {
+    value_item = value(bool_value);
+  } else if let Some(number_value) = value_or_values.as_f64() {
+    if let Some(integer_value) = f64_to_i64_if_integer(number_value) {
+      value_item = value(integer_value);
+    } else {
+      value_item = value(number_value);
+    }
+  } else if let Some(string_value) = value_or_values.as_string() {
+    value_item = value(string_value);
+  } else if value_or_values.is_undefined() {
     return None;
-  } else if let Ok(int_val) = trimmed_value_str.parse::<i64>() {
-    value(int_val)
-  } else if let Ok(float_val) = trimmed_value_str.parse::<f64>() {
-    value(float_val)
   } else {
-    // Default to string, using the original untrimmed string.
-    value(value_str.to_string())
-  };
+    // unsupported type
+    unreachable!("Unsupported type");
+  }
 
-  // The `value()` function returns an `Item`. We need to extract the `Value` from it.
   Some(
-    item
+    value_item
       .as_value()
       .expect("Internal error: `value()` function should always produce an Item::Value variant")
       .to_owned(),
   )
 }
 
+fn f64_to_i64_if_integer(f: f64) -> Option<i64> {
+  // 1. Check if it's a whole number (no fractional part).
+  //    Using `trunc()` is often preferred over `fract()` for robustness
+  //    against minor floating-point inaccuracies near integers.
+  //    Also check if it's finite (not NaN or Infinity).
+  if f.is_finite() && f == f.trunc() {
+    // 2. Check if the value is within the representable range of i64.
+    //    Casting the bounds to f64 is necessary for comparison.
+    const I64_MIN_F64: f64 = i64::MIN as f64;
+    const I64_MAX_F64: f64 = i64::MAX as f64;
+
+    if (I64_MIN_F64..=I64_MAX_F64).contains(&f) {
+      // 3. If both conditions are met, perform the cast.
+      //    The `as` cast truncates, which is correct here since we know
+      //    f == f.trunc().
+      Some(f as i64)
+    } else {
+      // It's an integer but outside the i64 range.
+      None
+    }
+  } else {
+    // It's not a whole number or not finite.
+    None
+  }
+}
+
 /// Represents a single update operation derived from the input strings.
 #[derive(Debug, Clone)]
-struct UpdateItem<'a> {
+struct UpdateItem {
   original_index: usize,          // Used for stable sorting if path lengths are equal
-  path_parts: Vec<&'a str>,       // The path split into components
+  path_parts: Vec<String>,        // The path split into components
   value_to_insert: Option<Value>, // The parsed TOML value to insert
 }
 
 /// Sorts update items: longest path first, then by original index for stability.
-fn sort_updates(updates: &mut Vec<UpdateItem>) {
+fn sort_updates(updates: &mut [UpdateItem]) {
   updates.sort_by(|a, b| {
     // Primary key: path length (reversed for longest first)
     b.path_parts.len().cmp(&a.path_parts.len())
@@ -349,8 +354,54 @@ mod tests {
 
   use super::*;
 
+  struct Patch<'a> {
+    key_path: Vec<&'a str>,
+    value: PatchValue<'a>,
+  }
+
+  enum PatchValue<'a> {
+    String(&'a str),
+    Float(f64),
+    Integer(i64),
+    Boolean(bool),
+    Undefined,
+    Array(Vec<PatchValue<'a>>),
+  }
+
+  fn patch_value_to_js_value(value: &PatchValue) -> JsValue {
+    match value {
+      PatchValue::String(s) => JsValue::from_str(s),
+      PatchValue::Float(f) => JsValue::from_f64(*f),
+      PatchValue::Integer(i) => JsValue::from_f64(*i as f64),
+      PatchValue::Boolean(b) => JsValue::from_bool(*b),
+      PatchValue::Undefined => JsValue::undefined(),
+      PatchValue::Array(a) => {
+        let value_items = js_sys::Array::new();
+        for item in a {
+          value_items.push(&patch_value_to_js_value(item));
+        }
+        JsValue::from(value_items)
+      }
+    }
+  }
+
   fn test_update_toml_values(input: &str, patches: Vec<Patch>, expected: &str) {
-    let result = update_toml_values(input, patches).expect("Failed to update TOML");
+    let patches_js = js_sys::Array::new();
+    for patch in patches {
+      let patch_js = js_sys::Array::new();
+      let key_path_js = js_sys::Array::new();
+      for key in &patch.key_path {
+        key_path_js.push(&JsValue::from_str(key));
+      }
+
+      let patch_js_value = patch_value_to_js_value(&patch.value);
+
+      patch_js.push(&key_path_js);
+      patch_js.push(&patch_js_value);
+      patches_js.push(&patch_js);
+    }
+
+    let result = update_toml_values(input, patches_js).expect("Failed to update TOML");
     let expected_doc = DocumentMut::from_str(expected).unwrap();
     let result_doc = DocumentMut::from_str(&result).unwrap();
     assert_eq!(expected_doc.to_string(), result_doc.to_string());
@@ -379,14 +430,14 @@ key = "value"
 
   #[wasm_bindgen_test(unsupported = test)]
   fn test_empty_file_single_item() {
-    test_update_toml_values(r#""#, vec![patch_single_value(vec!["a".to_string()], "1".to_string())], r#"a = 1"#);
+    test_update_toml_values(r#""#, vec![Patch { key_path: vec!["a"], value: PatchValue::Integer(1) }], r#"a = 1"#);
   }
 
   #[wasm_bindgen_test(unsupported = test)]
   fn test_empty_file_double_item() {
     test_update_toml_values(
       r#""#,
-      vec![patch_single_value(vec!["a".to_string(), "b".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["a", "b"], value: PatchValue::Integer(1) }],
       r#"[a]
 b = 1
 "#,
@@ -400,7 +451,7 @@ b = 1
 [a]
 b = 1
 "#,
-      vec![patch_single_value(vec!["a".to_string(), "c".to_string(), "d".to_string()], "2".to_string())],
+      vec![Patch { key_path: vec!["a", "c", "d"], value: PatchValue::Integer(2) }],
       r#"
 [a]
 b = 1
@@ -416,10 +467,7 @@ c.d = 2
 [a]
 b = 1
 "#,
-      vec![patch_single_value(
-        vec!["a".to_string(), "c".to_string(), "d".to_string(), "e".to_string()],
-        "2".to_string(),
-      )],
+      vec![Patch { key_path: vec!["a", "c", "d", "e"], value: PatchValue::Integer(2) }],
       r#"
 [a]
 b = 1
@@ -438,7 +486,7 @@ e = 2
 key = "old_value"
 other = 123
 "#,
-      vec![patch_single_value(vec!["section".to_string(), "key".to_string()], "new_value".to_string())],
+      vec![Patch { key_path: vec!["section", "key"], value: PatchValue::String("new_value") }],
       r#"
 [section]
 key = "new_value"
@@ -454,7 +502,7 @@ other = 123
 [section]
 existing = true
 "#,
-      vec![patch_single_value(vec!["section".to_string(), "new_key".to_string()], "42".to_string())],
+      vec![Patch { key_path: vec!["section", "new_key"], value: PatchValue::Integer(42) }],
       r#"
 [section]
 existing = true
@@ -469,10 +517,7 @@ new_key = 42
       r#"
 [parent]
 "#,
-      vec![patch_single_value(
-        vec!["parent".to_string(), "child".to_string(), "grandchild".to_string()],
-        "true".to_string(),
-      )],
+      vec![Patch { key_path: vec!["parent", "child", "grandchild"], value: PatchValue::Boolean(true) }],
       r#"
 [parent]
 child.grandchild = true
@@ -491,9 +536,9 @@ key1 = "value1"
 key2 = 42
 "#,
       vec![
-        patch_single_value(vec!["section1".to_string(), "key1".to_string()], "updated".to_string()),
-        patch_single_value(vec!["section2".to_string(), "key2".to_string()], "99".to_string()),
-        patch_single_value(vec!["section3".to_string(), "new".to_string()], "3.14".to_string()),
+        Patch { key_path: vec!["section1", "key1"], value: PatchValue::String("updated") },
+        Patch { key_path: vec!["section2", "key2"], value: PatchValue::Integer(99) },
+        Patch { key_path: vec!["section3", "new"], value: PatchValue::Float(3.25) },
       ],
       r#"
 [section1]
@@ -503,7 +548,7 @@ key1 = "updated"
 key2 = 99
 
 [section3]
-new = 3.14
+new = 3.25
 "#,
     );
   }
@@ -515,10 +560,10 @@ new = 3.14
 [test]
 "#,
       vec![
-        patch_single_value(vec!["test".to_string(), "string".to_string()], "hello".to_string()),
-        patch_single_value(vec!["test".to_string(), "int".to_string()], "123".to_string()),
-        patch_single_value(vec!["test".to_string(), "float".to_string()], "45.67".to_string()),
-        patch_single_value(vec!["test".to_string(), "bool".to_string()], "true".to_string()),
+        Patch { key_path: vec!["test", "string"], value: PatchValue::String("hello") },
+        Patch { key_path: vec!["test", "int"], value: PatchValue::Integer(123) },
+        Patch { key_path: vec!["test", "float"], value: PatchValue::Float(45.67) },
+        Patch { key_path: vec!["test", "bool"], value: PatchValue::Boolean(true) },
       ],
       r#"
 [test]
@@ -537,7 +582,7 @@ bool = true
 [section]
 foo = 1
 "#,
-      vec![patch_single_value(vec!["section".to_string(), "new_key".to_string()], "42".to_string())],
+      vec![Patch { key_path: vec!["section", "new_key"], value: PatchValue::Integer(42) }],
       r#"
 [section]
 foo = 1
@@ -557,20 +602,8 @@ foo = 1
 thing = true
 "#,
       vec![
-        patch_single_value(
-          vec!["section".to_string(), "subsection".to_string(), "new_key".to_string()],
-          "42".to_string(),
-        ),
-        patch_single_value(
-          vec![
-            "section".to_string(),
-            "subsection".to_string(),
-            "something".to_string(),
-            "else".to_string(),
-            "here".to_string(),
-          ],
-          "43".to_string(),
-        ),
+        Patch { key_path: vec!["section", "subsection", "new_key"], value: PatchValue::Integer(42) },
+        Patch { key_path: vec!["section", "subsection", "something", "else", "here"], value: PatchValue::Integer(43) },
       ],
       r#"
 [section]
@@ -596,12 +629,9 @@ thing = true
 existing = 1
 "#,
       vec![
-        patch_single_value(vec!["foo".to_string(), "bar".to_string(), "aaa".to_string()], "1".to_string()),
-        patch_single_value(vec!["foo".to_string(), "bar".to_string(), "bbb".to_string()], "2".to_string()),
-        patch_single_value(
-          vec!["foo".to_string(), "bar".to_string(), "ccc".to_string(), "ddd".to_string()],
-          "3".to_string(),
-        ),
+        Patch { key_path: vec!["foo", "bar", "aaa"], value: PatchValue::Integer(1) },
+        Patch { key_path: vec!["foo", "bar", "bbb"], value: PatchValue::Integer(2) },
+        Patch { key_path: vec!["foo", "bar", "ccc", "ddd"], value: PatchValue::Integer(3) },
       ],
       r#"
 [foo]
@@ -624,7 +654,7 @@ ddd = 3
 [a.b.c]
 d = 1
 "#,
-      vec![patch_single_value(vec!["a".to_string(), "b".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["a", "b"], value: PatchValue::Integer(1) }],
       r#"[a]
 b = 1
 "#,
@@ -638,7 +668,7 @@ b = 1
 [a]
 d = 1
 "#,
-      vec![patch_single_value(vec!["a".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["a"], value: PatchValue::Integer(1) }],
       r#"a = 1"#,
     );
   }
@@ -650,7 +680,7 @@ d = 1
 [[a.b.c]]
 d = 1
 "#,
-      vec![patch_single_value(vec!["a".to_string(), "b".to_string(), "c".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["a", "b", "c"], value: PatchValue::Integer(1) }],
       r#"[a.b]
 c = 1
 "#,
@@ -664,7 +694,7 @@ c = 1
 [a]
 b = 1
 "#,
-      vec![patch_single_value(vec!["c".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["c"], value: PatchValue::Integer(1) }],
       r#"c = 1
 
 [a]
@@ -680,7 +710,7 @@ b = 1
 [a]
 b = 1
 "#,
-      vec![patch_single_value(vec!["a".to_string(), "b".to_string(), "c".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["a", "b", "c"], value: PatchValue::Integer(1) }],
       r#"
 [a]
 
@@ -697,7 +727,7 @@ c = 1
 [a]
 d = 1
 "#,
-      vec![patch_single_value(vec!["a".to_string(), "b".to_string(), "c".to_string()], "1".to_string())],
+      vec![Patch { key_path: vec!["a", "b", "c"], value: PatchValue::Integer(1) }],
       r#"
 [a]
 d = 1
@@ -713,10 +743,7 @@ b.c = 1
 [a.b.c]
 existing = 1
 "#,
-      vec![patch_single_value(
-        vec!["a".to_string(), "b".to_string(), "c".to_string(), "new".to_string()],
-        "1".to_string(),
-      )],
+      vec![Patch { key_path: vec!["a", "b", "c", "new"], value: PatchValue::Integer(1) }],
       r#"
 [a.b.c]
 existing = 1
@@ -733,46 +760,9 @@ new = 1
 existing = 1
 "#,
       vec![
-        patch_single_value(
-          vec![
-            "foo".to_string(),
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "g".to_string(),
-          ],
-          "1".to_string(),
-        ),
-        patch_single_value(
-          vec![
-            "foo".to_string(),
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "h".to_string(),
-          ],
-          "2".to_string(),
-        ),
-        patch_single_value(
-          vec![
-            "foo".to_string(),
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "i".to_string(),
-            "j".to_string(),
-          ],
-          "3".to_string(),
-        ),
+        Patch { key_path: vec!["foo", "a", "b", "c", "d", "e", "f", "g"], value: PatchValue::Integer(1) },
+        Patch { key_path: vec!["foo", "a", "b", "c", "d", "e", "f", "h"], value: PatchValue::Integer(2) },
+        Patch { key_path: vec!["foo", "a", "b", "c", "d", "e", "f", "i", "j"], value: PatchValue::Integer(3) },
       ],
       r#"
 [foo.a.b.c.d.e]
@@ -795,7 +785,7 @@ j = 3
       [section]
       key = "value"
       "#,
-      vec![patch_single_value(vec!["section".to_string(), "key".to_string()], "$undefined".to_string())],
+      vec![Patch { key_path: vec!["section", "key"], value: PatchValue::Undefined }],
       r#"
       [section]
       "#,
@@ -808,7 +798,7 @@ j = 3
       r#"
       key = "value"
       "#,
-      vec![patch_single_value(vec!["key".to_string()], "$undefined".to_string())],
+      vec![Patch { key_path: vec!["key"], value: PatchValue::Undefined }],
       r#"      "#,
     );
   }
@@ -819,7 +809,7 @@ j = 3
       r#"
       [section]
       "#,
-      vec![patch_single_value(vec!["key".to_string()], "$undefined".to_string())],
+      vec![Patch { key_path: vec!["key"], value: PatchValue::Undefined }],
       r#"
       [section]
       "#,
@@ -850,8 +840,8 @@ untouched = 123 # This comment will be preserved
 foo = 42 # Number comment
 "#,
       vec![
-        patch_single_value(vec!["section".to_string(), "key".to_string()], "updated".to_string()),
-        patch_single_value(vec!["another".to_string(), "bar".to_string()], "true".to_string()),
+        Patch { key_path: vec!["section", "key"], value: PatchValue::String("updated") },
+        Patch { key_path: vec!["another", "bar"], value: PatchValue::Boolean(true) },
       ],
       r#"
 # This is a top comment
@@ -875,10 +865,10 @@ bar = true
       [a]
       b = [1, 2, 3]
       "#,
-      vec![patch_array_values(
-        vec!["a".to_string(), "b".to_string()],
-        vec!["4".to_string(), "5".to_string(), "hello".to_string()],
-      )],
+      vec![Patch {
+        key_path: vec!["a", "b"],
+        value: PatchValue::Array(vec![PatchValue::Integer(4), PatchValue::Integer(5), PatchValue::String("hello")]),
+      }],
       r#"
       [a]
       b = [4, 5, "hello"]
@@ -897,7 +887,7 @@ bar = true
   fn test_sort_updates_single_item() {
     let mut updates = vec![UpdateItem {
       original_index: 0,
-      path_parts: vec!["a", "b"],
+      path_parts: vec!["a".to_string(), "b".to_string()],
       value_to_insert: Some(value(1).as_value().unwrap().to_owned()),
     }];
     sort_updates(&mut updates);

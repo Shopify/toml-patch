@@ -11,6 +11,8 @@ env:
 jobs:
   check_and_test:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
     - uses: actions/checkout@v4
 
@@ -79,3 +81,20 @@ jobs:
     - name: Run example tests
       run: pnpm test
       working-directory: example
+
+    - name: Run example benchmarks
+      run: pnpm vitest bench > benchmark-results.txt
+      working-directory: example
+      env:
+        NO_COLOR: 1
+
+    - name: Format benchmark results
+      run: |
+        echo '```' > temp.txt
+        cat example/benchmark-results.txt >> temp.txt
+        echo '```' >> temp.txt
+        mv temp.txt example/benchmark-results.txt
+
+    - uses: marocchino/sticky-pull-request-comment@fcf6fe9e4a0409cd9316a5011435be0f3327f1e1 # pin@v2.3.1
+      with:
+        path: 'example/benchmark-results.txt'

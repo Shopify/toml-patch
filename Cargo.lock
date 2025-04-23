@@ -175,8 +175,9 @@ dependencies = [
 
 [[package]]
 name = "toml-patch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "js-sys",
  "lol_alloc",
  "toml_edit",
  "wasm-bindgen",
