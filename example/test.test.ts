@@ -3,9 +3,10 @@ import {
   updateTomlValues,
   patchSingleValue,
   patchArrayValues,
+  updateTomlValues2,
 } from "../pkg/toml_patch.js";
 
-const sampleToml = `
+export const sampleToml = `
 # This is a sample TOML file
 title = "TOML Example"
 
@@ -17,6 +18,22 @@ organization = "Test Org"
 server = "192.168.1.1"
 ports = [ 8001, 8001, 8002 ] # Comment after array
 enabled = true
+`;
+
+export const expected = `
+# This is a sample TOML file
+title = "TOML Example"
+top_level = true
+
+[owner]
+name = "Test User"
+dotted.notation = 123.5
+
+[database]
+server = "changed"
+ports = [ 8001, 8001, 8002 ] # Comment after array
+enabled = true
+backup_ports = [8003, 8004]
 `;
 
 describe("updateTomlValues", () => {
@@ -33,21 +50,20 @@ describe("updateTomlValues", () => {
       patchArrayValues(["database", "backup_ports"], ["8003", "8004"]),
     ]);
 
-    const expected = `
-# This is a sample TOML file
-title = "TOML Example"
-top_level = true
+    expect(output).toBe(expected);
+  });
 
-[owner]
-name = "Test User"
-dotted.notation = 123.5
-
-[database]
-server = "changed"
-ports = [ 8001, 8001, 8002 ] # Comment after array
-enabled = true
-backup_ports = [8003, 8004]
-`;
+  it("should use toml 2", () => {
+    const output = updateTomlValues2(sampleToml, [
+      [["owner", "dotted", "notation"], 123.5],
+      [["database", "server"], "changed"],
+      [["top_level"], true],
+      [["owner", "organization"], undefined],
+      [
+        ["database", "backup_ports"],
+        [8003, 8004],
+      ],
+    ]);
 
     expect(output).toBe(expected);
   });

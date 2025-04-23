@@ -90,7 +90,7 @@ pub fn update_toml_values(
     .iter()
     .enumerate()
     .map(|(original_index, patch)| {
-      let path_parts = patch.key_path.iter().map(|s| s.as_str()).collect();
+      let path_parts = patch.key_path.clone();
 
       let value_to_insert = if let Some(array_value) = patch.as_multiple_values() {
         Some(Value::Array(array_value.iter().map(|s| parse_value(s).unwrap()).collect()))
@@ -106,7 +106,49 @@ pub fn update_toml_values(
   sort_updates(&mut update_items);
 
   for item in update_items {
-    apply_single_update_to_doc(&mut doc, &item.path_parts, item.value_to_insert)?;
+    apply_single_update_to_doc(
+      &mut doc,
+      &item.path_parts.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+      item.value_to_insert,
+    )?;
+  }
+
+  Ok(doc.to_string())
+}
+
+#[wasm_bindgen(js_name = "updateTomlValues2")]
+pub fn update_toml_values2(
+  #[wasm_bindgen(js_name = "tomlContent")] toml_content: &str,
+  #[wasm_bindgen(
+    unchecked_param_type = "[string[], number | string | boolean | undefined | (number | string | boolean)[]][]"
+  )]
+  patches: js_sys::Array,
+) -> Result<String, String> {
+  let mut doc = DocumentMut::from_str(toml_content).map_err(|e| format!("Failed to parse TOML: {}", e))?;
+
+  let mut update_items = patches
+    .iter()
+    .enumerate()
+    .map(|(index, tuple)| {
+      let tuple_as_array = js_sys::Array::unchecked_from_js(tuple);
+      let path = tuple_as_array.get(0);
+      let path_as_array = js_sys::Array::unchecked_from_js(path);
+      let path_as_vec = path_as_array.iter().map(|v| v.as_string().unwrap()).collect::<Vec<String>>();
+      let value_or_values = tuple_as_array.get(1);
+      let value_to_insert = parse_value_from_js_value(value_or_values);
+
+      return UpdateItem { original_index: index, path_parts: path_as_vec, value_to_insert };
+    })
+    .collect::<Vec<UpdateItem>>();
+
+  sort_updates(&mut update_items);
+
+  for item in update_items {
+    apply_single_update_to_doc(
+      &mut doc,
+      &item.path_parts.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+      item.value_to_insert,
+    )?;
   }
 
   Ok(doc.to_string())
@@ -279,11 +321,72 @@ fn parse_value(value_str: &str) -> Option<Value> {
   )
 }
 
+fn parse_value_from_js_value(value_or_values: JsValue) -> Option<Value> {
+  let value_item: Item;
+  if value_or_values.is_array() {
+    let values = js_sys::Array::from(&value_or_values);
+    let with_nones = values.iter().map(|v| parse_value_from_js_value(v)).filter_map(|v| v).collect::<Vec<Value>>();
+
+    value_item = Item::Value(Value::from_iter(with_nones));
+  } else {
+    if let Some(bool_value) = value_or_values.as_bool() {
+      value_item = value(bool_value);
+    } else if let Some(number_value) = value_or_values.as_f64() {
+      if let Some(integer_value) = f64_to_i64_if_integer(number_value) {
+        value_item = value(integer_value);
+      } else {
+        value_item = value(number_value);
+      }
+    } else if let Some(string_value) = value_or_values.as_string() {
+      value_item = value(string_value);
+    } else if value_or_values.is_undefined() {
+      return None;
+    } else {
+      // unsupported type
+      unreachable!("Unsupported type");
+    }
+  }
+
+  let value_to_insert = Some(
+    value_item
+      .as_value()
+      .expect("Internal error: `value()` function should always produce an Item::Value variant")
+      .to_owned(),
+  );
+  return value_to_insert;
+}
+
+fn f64_to_i64_if_integer(f: f64) -> Option<i64> {
+  // 1. Check if it's a whole number (no fractional part).
+  //    Using `trunc()` is often preferred over `fract()` for robustness
+  //    against minor floating-point inaccuracies near integers.
+  //    Also check if it's finite (not NaN or Infinity).
+  if f.is_finite() && f == f.trunc() {
+    // 2. Check if the value is within the representable range of i64.
+    //    Casting the bounds to f64 is necessary for comparison.
+    const I64_MIN_F64: f64 = i64::MIN as f64;
+    const I64_MAX_F64: f64 = i64::MAX as f64;
+
+    if f >= I64_MIN_F64 && f <= I64_MAX_F64 {
+      // 3. If both conditions are met, perform the cast.
+      //    The `as` cast truncates, which is correct here since we know
+      //    f == f.trunc().
+      Some(f as i64)
+    } else {
+      // It's an integer but outside the i64 range.
+      None
+    }
+  } else {
+    // It's not a whole number or not finite.
+    None
+  }
+}
+
 /// Represents a single update operation derived from the input strings.
 #[derive(Debug, Clone)]
-struct UpdateItem<'a> {
+struct UpdateItem {
   original_index: usize,          // Used for stable sorting if path lengths are equal
-  path_parts: Vec<&'a str>,       // The path split into components
+  path_parts: Vec<String>,        // The path split into components
   value_to_insert: Option<Value>, // The parsed TOML value to insert
 }
 
