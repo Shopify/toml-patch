@@ -1,0 +1,16 @@
+{
+    "name": "toml-patch-example",
+    "version": "1.0.0",
+    "description": "Example usage of toml-patch",
+    "main": "index.js",
+    "scripts": {
+        "build": "wasm-pack build --target nodejs --release --scope=\"shopify\"",
+        "test": "vitest run"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "vitest": "3.1.2"
+    }
+}
