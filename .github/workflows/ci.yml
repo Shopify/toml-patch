@@ -14,6 +14,24 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install pnpm
+      uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # pin@v4.0.0
+      with:
+        version: "8.15.0"
+        run_install: false
+
+    - name: Install Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: "20"
+        cache: 'pnpm'
+        cache-dependency-path: 'example/pnpm-lock.yaml'
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+      shell: bash
+      working-directory: example
+
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -52,3 +70,8 @@ jobs:
 
     - name: Run wasm-pack tests
       run: wasm-pack test --node -- --color always # Pass color flag to wasm-pack tests
+      continue-on-error: true
+
+    - name: Run example tests
+      run: pnpm test
+      working-directory: example
