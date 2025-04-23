@@ -6,10 +6,10 @@ A WebAssembly-powered library to efficiently update TOML files, based on Rust's 
 
 ## Usage (JavaScript/TypeScript)
 
-The primary function exported for JavaScript usage is `updateTomlValues`.
+The primary function exported for JavaScript usage is `updateTomlValues`. Take a look at the `example` folder.
 
 ```javascript
-import { updateTomlValues, patchSingleValue } from "@shopify/toml-patch";
+import { updateTomlValues } from "@shopify/toml-patch";
 
 const originalToml = `
 [package]
@@ -24,9 +24,9 @@ try {
   const updatedToml = updateTomlValues(
     originalToml,
     [
-      patchSingleValue(['package', 'version'], '0.2.0'),
-      patchSingleValue(['dependencies', 'serde'], '$undefined'),
-      patchSingleValue(['new_table', 'key'], 'new value')
+      [['package', 'version'], '0.2.0'],
+      [['dependencies', 'serde'], undefined],
+      [['new_table', 'key'], 'new value'],
     ]
   );
 
@@ -48,16 +48,6 @@ try {
 }
 
 ```
-
-**Arguments:**
-
-1.  `toml_content` (string): The original TOML content.
-2.  `paths_str` (string): A comma-separated string of dotted paths (e.g., `"table.key`).
-3.  `values_str` (string): A comma-separated string of values corresponding to the paths. Values are parsed as TOML values (so strings need to be quoted). Use the special string `"$undefined"` to remove the specified key.
-
-**Returns:**
-
-*   (string): The updated TOML content as a string.
 
 ## Development
 
