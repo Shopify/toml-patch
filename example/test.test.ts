@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  updateTomlValues,
-  patchSingleValue,
-  patchArrayValues,
-  updateTomlValues2,
-} from "../pkg/toml_patch.js";
+import { updateTomlValues } from "../pkg/toml_patch.js";
 
 export const sampleToml = `
 # This is a sample TOML file
@@ -41,20 +36,8 @@ describe("updateTomlValues", () => {
     expect(updateTomlValues("", [])).toBe("");
   });
 
-  it("updating TOML makes minimal changes and preserves as much as possible", async () => {
+  it("updating TOML makes minimal changes and preserves as much as possible", () => {
     const output = updateTomlValues(sampleToml, [
-      patchSingleValue(["owner", "dotted", "notation"], "123.5"),
-      patchSingleValue(["database", "server"], "changed"),
-      patchSingleValue(["top_level"], "true"),
-      patchSingleValue(["owner", "organization"], "$undefined"),
-      patchArrayValues(["database", "backup_ports"], ["8003", "8004"]),
-    ]);
-
-    expect(output).toBe(expected);
-  });
-
-  it("should use toml 2", () => {
-    const output = updateTomlValues2(sampleToml, [
       [["owner", "dotted", "notation"], 123.5],
       [["database", "server"], "changed"],
       [["top_level"], true],

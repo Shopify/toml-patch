@@ -11,6 +11,8 @@ env:
 jobs:
   check_and_test:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
     - uses: actions/checkout@v4
 
@@ -79,3 +81,15 @@ jobs:
     - name: Run example tests
       run: pnpm test
       working-directory: example
+
+    - name: Run example benchmarks
+      run: pnpm vitest bench > benchmark-results.txt
+      working-directory: example
+      env:
+        NO_COLOR: 1
+
+    - uses: mshick/add-pr-comment@v2
+      with:
+        message-path: 'example/benchmark-results.txt'
+        message-id: 'benchmark-results'
+        preformatted: true
