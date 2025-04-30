@@ -11,7 +11,7 @@ jobs:
   check_and_test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -21,7 +21,7 @@ jobs:
         targets: wasm32-unknown-unknown
 
     - name: Cache cargo dependencies
-      uses: actions/cache@v4
+      uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       with:
         path: |
           ~/.cargo/bin/
@@ -33,7 +33,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
-    - uses: jetli/wasm-pack-action@v0.4.0
+    - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
       with:
         version: 'latest'
 
@@ -50,7 +50,7 @@ jobs:
         fi
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: "20"
         registry-url: "https://registry.npmjs.org"
