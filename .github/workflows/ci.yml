@@ -95,6 +95,6 @@ jobs:
         echo '```' >> temp.txt
         mv temp.txt example/benchmark-results.txt
 
-    - uses: marocchino/sticky-pull-request-comment@fcf6fe9e4a0409cd9316a5011435be0f3327f1e1 # pin@v2.3.1
+    - uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db # pin@v2.9.2
       with:
         path: 'example/benchmark-results.txt'
