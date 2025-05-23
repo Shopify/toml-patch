@@ -1,6 +1,6 @@
 use std::{error::Error, fmt, str::FromStr};
 
-use toml_edit::{DocumentMut, Item, Table, TomlError as TomlEditError, Value, value};
+use toml_edit::{DocumentMut, ImDocument, Item, Table, TomlError as TomlEditError, Value, value};
 use wasm_bindgen::prelude::*;
 
 extern crate alloc;
@@ -89,6 +89,97 @@ pub fn update_toml_values(
   }
 
   Ok(doc.to_string())
+}
+
+#[wasm_bindgen(getter_with_clone, inspectable)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TomlLocation {
+  pub path: Vec<String>,
+  pub start: usize,
+  pub end: usize,
+}
+
+impl TomlLocation {
+  fn create(path: &[&str], start: usize, end: usize) -> Self {
+    Self { path: path.iter().map(|s| s.to_string()).collect(), start, end }
+  }
+}
+
+#[wasm_bindgen(js_name = "getTomlLocations")]
+pub fn get_toml_locations(
+  #[wasm_bindgen(js_name = "tomlContent")] toml_content: &str,
+) -> Result<Vec<TomlLocation>, String> {
+  let doc = ImDocument::from_str(toml_content).map_err(|e| format!("Failed to parse TOML: {}", e))?;
+
+  let mut locations = Vec::new();
+
+  let doc_span = doc.span();
+  if let Some(doc_span) = doc_span {
+    locations.push(TomlLocation { path: vec![], start: doc_span.start, end: doc_span.end });
+  }
+
+  let mut current_path = Vec::<String>::new();
+
+  // while let Some(item) = current_item {
+  let locations = get_locations_for_table(doc.as_table(), current_path);
+  // }
+  Ok(locations)
+}
+
+fn get_locations_for_table(table: &Table, current_path: Vec<String>) -> Vec<TomlLocation> {
+  let mut locations = vec![];
+  let table_span = table.span();
+  if let Some(table_span) = table_span {
+    locations.push(TomlLocation { path: current_path.clone(), start: table_span.start, end: table_span.end });
+  }
+
+  table.iter().for_each(|(key, table_item)| match table_item {
+    Item::Value(v) => {
+      let mut with_key = current_path.clone();
+      with_key.push(key.to_string());
+      locations.extend(get_locations_for_value(v, with_key));
+    }
+    Item::Table(sub_table) => {
+      let mut with_key = current_path.clone();
+      with_key.push(key.to_string());
+      locations.extend(get_locations_for_table(sub_table, with_key));
+    }
+    Item::ArrayOfTables(aot) => {
+      aot.iter().enumerate().for_each(|(index, table)| {
+        let mut with_index = current_path.clone();
+        with_index.push(key.to_string());
+        with_index.push(index.to_string());
+        locations.extend(get_locations_for_table(table, with_index));
+      });
+    }
+    _ => {}
+  });
+  locations
+}
+
+fn get_locations_for_value(value: &Value, current_path: Vec<String>) -> Vec<TomlLocation> {
+  let mut locations = vec![];
+  if let Some(value_span) = value.span() {
+    locations.push(TomlLocation { path: current_path.clone(), start: value_span.start, end: value_span.end });
+  }
+  match value {
+    Value::Array(array) => {
+      array.iter().enumerate().for_each(|(index, value)| {
+        let mut with_index = current_path.clone();
+        with_index.push(index.to_string());
+        locations.extend(get_locations_for_value(value, with_index));
+      });
+    }
+    Value::InlineTable(table) => {
+      table.iter().for_each(|(key, value)| {
+        let mut with_key = current_path.clone();
+        with_key.push(key.to_string());
+        locations.extend(get_locations_for_value(value, with_key));
+      });
+    }
+    _ => {}
+  }
+  locations
 }
 
 /// This function handles the core logic of applying a single update item to the TOML document.
@@ -893,5 +984,48 @@ bar = true
     sort_updates(&mut updates);
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0].path_parts, vec!["a", "b"]);
+  }
+
+  #[wasm_bindgen_test(unsupported = test)]
+  fn test_get_toml_locations() {
+    let locations = get_toml_locations(
+      r#"
+    top = 3
+
+    [a]
+    b = 1
+    c = [true, false]
+
+    [[b]]
+    yes = 1
+
+    [[b]]
+    no = 2
+
+    [c.d.e.f.g]
+    h = { "hello" = { "world" = 1 } }
+    "#,
+    )
+    .unwrap();
+    pretty_assertions::assert_eq!(
+      locations,
+      vec![
+        TomlLocation::create(&[], 0, 12),
+        TomlLocation::create(&["top"], 11, 12),
+        TomlLocation::create(&["a"], 18, 53),
+        TomlLocation::create(&["a", "b"], 30, 31),
+        TomlLocation::create(&["a", "c"], 40, 53),
+        TomlLocation::create(&["a", "c", "0"], 41, 45),
+        TomlLocation::create(&["a", "c", "1"], 47, 52),
+        TomlLocation::create(&["b", "0"], 59, 76),
+        TomlLocation::create(&["b", "0", "yes"], 75, 76),
+        TomlLocation::create(&["b", "1"], 82, 98),
+        TomlLocation::create(&["b", "1", "no"], 97, 98),
+        TomlLocation::create(&["c", "d", "e", "f", "g"], 104, 153),
+        TomlLocation::create(&["c", "d", "e", "f", "g", "h"], 124, 153),
+        TomlLocation::create(&["c", "d", "e", "f", "g", "h", "hello"], 136, 151),
+        TomlLocation::create(&["c", "d", "e", "f", "g", "h", "hello", "world"], 148, 149),
+      ]
+    )
   }
 }
