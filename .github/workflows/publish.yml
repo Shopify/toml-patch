@@ -58,7 +58,6 @@ jobs:
       with:
         node-version: "22.14.0"
         registry-url: "https://registry.npmjs.org"
-        cache: "npm"
 
     - name: Update npm to latest
       run: npm install -g npm@latest
